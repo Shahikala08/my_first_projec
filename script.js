@@ -1,54 +1,78 @@
-const API_BASE = "http://127.0.0.1:8000";
+let timetable = {};
 let lastNotifiedId = null;
 
-// Register service worker for background notifications
-if ("serviceWorker" in navigator) {
-  navigator.serviceWorker.register("sw.js").then(() => {
-    console.log("✅ Service Worker registered");
-  });
+async function loadTimetable() {
+  const res = await fetch("timetable.json");
+  timetable = await res.json();
+  fetchNow();
+  fetchToday();
 }
 
-// Fetch current & next
-async function fetchNow() {
-  try {
-    const res = await fetch(`${API_BASE}/now`);
-    const data = await res.json();
-    showNow(data.current);
-    showNext(data.next);
+function todayName() {
+  return new Date().toLocaleDateString("en-US", { weekday: "long" });
+}
 
-    if (data.current) {
-      const id = `${data.current.day}|${data.current.subject}|${data.current.start}`;
-      if (id !== lastNotifiedId) {
-        sendNotification(data.current, data.next);
-        lastNotifiedId = id;
+function parseTime(s) {
+  const [hh, mm] = s.split(":").map(Number);
+  const d = new Date();
+  d.setHours(hh, mm, 0, 0);
+  return d;
+}
+
+function findCurrentAndNext() {
+  const now = new Date();
+  const day = todayName();
+  const sessions = timetable[day] || [];
+  let current = null, next = null;
+
+  for (let i = 0; i < sessions.length; i++) {
+    const [start, end, subject] = sessions[i];
+    const st = parseTime(start), et = parseTime(end);
+
+    if (now >= st && now < et) {
+      current = { start, end, subject, day };
+      if (i + 1 < sessions.length) {
+        const [ns, ne, subj] = sessions[i + 1];
+        next = { start: ns, end: ne, subject: subj, day };
       }
+      break;
     }
-  } catch (err) {
-    console.error("Error fetching /now", err);
-    document.getElementById("nowInfo").innerText = "Error contacting backend.";
-    document.getElementById("nextInfo").innerText = "";
+    if (now < st && !next) {
+      next = { start, end, subject, day };
+    }
+  }
+
+  return { current, next };
+}
+
+function fetchNow() {
+  const { current, next } = findCurrentAndNext();
+  showNow(current);
+  showNext(next);
+
+  if (current) {
+    const id = `${current.day}|${current.subject}|${current.start}`;
+    if (id !== lastNotifiedId) {
+      sendNotification(current, next);
+      lastNotifiedId = id;
+    }
   }
 }
 
-async function fetchToday() {
-  try {
-    const res = await fetch(`${API_BASE}/today`);
-    const data = await res.json();
-    const container = document.getElementById("todayList");
-    if (!data.sessions || data.sessions.length === 0) {
-      container.innerText = `No sessions for ${data.day}`;
-      return;
-    }
-    let html = `<strong>${data.day}</strong><ul>`;
-    for (const s of data.sessions) {
-      html += `<li>${s.start} - ${s.end} → ${s.subject}</li>`;
-    }
-    html += `</ul>`;
-    container.innerHTML = html;
-  } catch (err) {
-    console.error("Error fetching /today", err);
-    document.getElementById("todayList").innerText = "Error contacting backend.";
+function fetchToday() {
+  const day = todayName();
+  const sessions = timetable[day] || [];
+  const container = document.getElementById("todayList");
+  if (sessions.length === 0) {
+    container.innerText = `No sessions for ${day}`;
+    return;
   }
+  let html = `<strong>${day}</strong><ul>`;
+  for (const [start, end, subject] of sessions) {
+    html += `<li>${start} - ${end} → ${subject}</li>`;
+  }
+  html += `</ul>`;
+  container.innerHTML = html;
 }
 
 function showNow(current) {
@@ -78,12 +102,20 @@ function sendNotification(current, next) {
   if (next) body += `\nNext: ${next.subject} (${next.start} - ${next.end})`;
 
   if (Notification.permission === "granted") {
-    navigator.serviceWorker.ready.then((reg) => {
-      reg.showNotification(title, { body });
-    });
-  } else {
-    console.log("Notification blocked or not allowed");
+    new Notification(title, { body });
   }
 }
 
-document.getElementById("btnRefre
+document.getElementById("btnRefresh").addEventListener("click", () => {
+  fetchNow();
+  fetchToday();
+});
+
+document.getElementById("btnPerm").addEventListener("click", async () => {
+  const p = await Notification.requestPermission();
+  alert("Notification permission: " + p);
+});
+
+// Initial load
+loadTimetable();
+setInterval(fetchNow, 20 * 1000);
